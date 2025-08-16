@@ -1,0 +1,43 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'org.graalvm.buildtools.native' version '0.10.6'
+}
+
+group = 'santannaf.payments.java.revolts'
+version = '1.0'
+
+repositories {
+    mavenCentral()
+}
+
+application {
+    mainClass = 'rinha.java.Application'
+}
+
+jar {
+    archiveFileName = "rinha.jar"
+    manifest {
+        attributes(
+                'Main-Class': 'rinha.java.Application'
+        )
+    }
+}
+
+dependencies {
+    implementation 'redis.clients:jedis:6.1.0'
+}
+
+graalvmNative {
+    binaries {
+        main {
+            imageName = "rinha"
+            buildArgs(
+                    "-march=skylake",
+                    "-O3",
+                    "--gc=serial",
+                    "--no-server"
+            )
+        }
+    }
+}
