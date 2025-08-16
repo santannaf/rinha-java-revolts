@@ -17,14 +17,18 @@ public final class PaymentProcessorClient {
 
     private final HttpClient httpclient;
     private final URI defaultURI;
+    private final URI fallbackURI;
     private final long backoff;
     private final int retry;
 
     private PaymentProcessorClient() {
-        var defaultURL = System.getenv().getOrDefault("HOST_PROCESSOR_DEFAULT", "http://localhost:8001");
-
         this.httpclient = HttpClientConfig.getInstance().getHttpClient();
+
+        var defaultURL = System.getenv().getOrDefault("HOST_PROCESSOR_DEFAULT", "http://localhost:8001");
+        var fallbackURL = System.getenv().getOrDefault("HOST_PROCESSOR_FALLBACK", "http://localhost:8002");
         this.defaultURI = URI.create(defaultURL.concat("/payments"));
+        this.fallbackURI = URI.create(fallbackURL.concat("/payments"));
+
         this.backoff = Integer.parseInt(System.getenv().getOrDefault("NUM_BACK_OFF", "15")) * 1_000_000L;
         this.retry = Integer.parseInt(System.getenv().getOrDefault("NUM_RETRY", "15"));
 
@@ -32,6 +36,7 @@ public final class PaymentProcessorClient {
         System.out.println("============ Loading URLs ============");
         System.out.println("======================================");
         System.out.println("default: " + defaultURL);
+        System.out.println("fallback: " + fallbackURL);
         System.out.println("retry: " + this.backoff);
         System.out.println("backoff: " + this.retry);
     }
@@ -52,6 +57,11 @@ public final class PaymentProcessorClient {
         }
 
         return false;
+    }
+
+    public boolean sendPaymentFallback(PaymentRequest paymentRequest) {
+        var request = buildRequest(paymentRequest.getPostData(), fallbackURI);
+        return sendPayment(request);
     }
 
     private boolean sendPayment(HttpRequest request) {

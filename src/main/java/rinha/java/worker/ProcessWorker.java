@@ -61,8 +61,7 @@ public final class ProcessWorker {
                     processPayment(write, pr);
                 }
 
-            } catch (Exception ex) {
-                ex.printStackTrace();
+            } catch (Exception _) {
             }
         }
     }
@@ -73,7 +72,18 @@ public final class ProcessWorker {
             final double score = prr.requestedAt;
             final byte[] member = DataBuilder.buildBytes(prr);
             write.zadd(KEY_PAYMENTS, score, member);
-        } else {
+        }
+
+
+        else {
+            if (client.sendPaymentFallback(pr)) {
+                var prr = pr.parseToFallback();
+                final double score = prr.requestedAt;
+                final byte[] member = DataBuilder.buildBytes(prr);
+                write.zadd(KEY_PAYMENTS, score, member);
+                return;
+            }
+
             queue.offer(pr);
             semaphore.release();
             write.set("health-payment", "false");

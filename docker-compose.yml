@@ -34,7 +34,7 @@ services:
           memory: 47MB
 
   api01: &api
-    image: thalessantanna/payments-the-revolts:0.0.1
+    image: thalessantanna/payments-the-revolts:0.0.2
     hostname: api01
     container_name: api01
     pull_policy: always
@@ -44,7 +44,7 @@ services:
       - REDIS_HOST=redis
       - NUM_WORKERS_READ=10
       - NUM_WORKERS_WRITE=10
-      - NUM_WORKERS=10
+      - NUM_WORKERS=15
       - NUM_BACK_OFF=5
       - FAILS_TO_PAUSE=1
       - NUM_RETRY=15
@@ -72,7 +72,7 @@ services:
       - REDIS_HOST=redis
       - NUM_WORKERS_READ=10
       - NUM_WORKERS_WRITE=10
-      - NUM_WORKERS=10
+      - NUM_WORKERS=15
       - NUM_BACK_OFF=5
       - FAILS_TO_PAUSE=1
       - NUM_RETRY=15
