@@ -33,8 +33,27 @@ services:
           cpus: "0.20"
           memory: 47MB
 
+  go-scheduler:
+    image: thalessantanna/go-scheduler:0.0.1
+    container_name: go-scheduler
+    hostname: go-scheduler
+    networks:
+      - backend
+      - payment-processor
+    environment:
+      - HEALTH_URL=http://payment-processor-default:8080/payments/service-health
+      - REDIS_ADDR=redis:6379
+      - HTTP_TIMEOUT_MS=5000
+    deploy:
+      resources:
+        limits:
+          cpus: "0.20"
+          memory: 47MB
+    depends_on:
+      - redis
+
   api01: &api
-    image: thalessantanna/payments-the-revolts:0.0.2
+    image: thalessantanna/payments-the-revolts:0.0.4
     hostname: api01
     container_name: api01
     pull_policy: always
@@ -42,12 +61,12 @@ services:
       - HOST_PROCESSOR_DEFAULT=http://payment-processor-default:8080
       - HOST_PROCESSOR_FALLBACK=http://payment-processor-fallback:8080
       - REDIS_HOST=redis
-      - NUM_WORKERS_READ=10
+      - NUM_WORKERS_READ=20
       - NUM_WORKERS_WRITE=10
-      - NUM_WORKERS=15
+      - NUM_WORKERS=10
       - NUM_BACK_OFF=5
       - FAILS_TO_PAUSE=1
-      - NUM_RETRY=15
+      - NUM_RETRY=10
     networks:
       - backend
       - payment-processor
@@ -55,6 +74,7 @@ services:
       - "30001:8080"
     depends_on:
       - redis
+      - go-scheduler
     deploy:
       resources:
         limits:
@@ -70,12 +90,12 @@ services:
       - HOST_PROCESSOR_DEFAULT=http://payment-processor-default:8080
       - HOST_PROCESSOR_FALLBACK=http://payment-processor-fallback:8080
       - REDIS_HOST=redis
-      - NUM_WORKERS_READ=10
+      - NUM_WORKERS_READ=20
       - NUM_WORKERS_WRITE=10
-      - NUM_WORKERS=15
+      - NUM_WORKERS=10
       - NUM_BACK_OFF=5
       - FAILS_TO_PAUSE=1
-      - NUM_RETRY=15
+      - NUM_RETRY=10
 
 networks:
   backend:

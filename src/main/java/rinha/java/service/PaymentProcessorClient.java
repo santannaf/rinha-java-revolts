@@ -48,15 +48,17 @@ public final class PaymentProcessorClient {
     public boolean processPayment(PaymentRequest paymentRequest) {
         var request = buildRequest(paymentRequest.getPostData(), defaultURI);
 
-        for (int i = 0; i < retry; i++) {
-            if (sendPayment(request)) {
-                return true;
-            }
-
-            LockSupport.parkNanos(this.backoff);
-        }
-
-        return false;
+        return sendPayment(request);
+//
+        //for (int i = 0; i < retry; i++) {
+        //    if (sendPayment(request)) {
+        //        return true;
+        //    }
+//
+        //    LockSupport.parkNanos(this.backoff);
+        //}
+//
+        //return false;
     }
 
     public boolean sendPaymentFallback(PaymentRequest paymentRequest) {
@@ -78,7 +80,6 @@ public final class PaymentProcessorClient {
         return HttpRequest.newBuilder()
                 .uri(uri)
                 .header(CONTENT_TYPE, CONTENT_TYPE_VALUE)
-                .timeout(Duration.ofMillis(999))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .build();
     }

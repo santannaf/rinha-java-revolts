@@ -1,4 +1,4 @@
-package rinha.java.leadership;
+/*package rinha.java.leadership;
 
 import redis.clients.jedis.Jedis;
 import rinha.java.http.HttpClientConfig;
@@ -75,3 +75,4 @@ public final class LeaderHealthMonitor {
         return value.startsWith("true");
     }
 }
+*/
