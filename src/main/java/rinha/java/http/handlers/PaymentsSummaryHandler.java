@@ -3,8 +3,9 @@ package rinha.java.http.handlers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
 import rinha.java.model.PaymentSummary;
-import rinha.java.persistence.redis.read.RedisSecondaryReadClient;
+import rinha.java.persistence.redis.RedisPool;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -15,7 +16,7 @@ import java.time.Instant;
 import java.util.List;
 
 public class PaymentsSummaryHandler implements HttpHandler {
-    private static final RedisSecondaryReadClient redisSecondaryRead = RedisSecondaryReadClient.getInstance();
+    private static final RedisPool redisSecondaryRead = RedisPool.getInstance();
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
@@ -61,8 +62,10 @@ public class PaymentsSummaryHandler implements HttpHandler {
         }
     }
 
+    private static final JedisPool pool = RedisPool.getInstance().getPool();
+
     private PaymentSummary range(long fromMs, long toMs) {
-        try (Jedis read = redisSecondaryRead.getPool().getResource()) {
+        try (Jedis read = pool.getResource()) {
             List<String> defBuckets = read.zrangeByScore("payments", fromMs, toMs);
 
             long defaultCount = 0;

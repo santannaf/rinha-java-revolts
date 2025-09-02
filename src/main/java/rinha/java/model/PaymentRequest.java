@@ -1,8 +1,8 @@
 package rinha.java.model;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -14,23 +14,42 @@ public class PaymentRequest {
     public boolean isDefault;
     public byte[] requestData;
     private byte[] postData;
-    public String correlationId;
     public long amountCents;
     public byte[] corrBytes;
 
     public PaymentRequest(byte[] requestData) {
-        this.requestData = requestData;
+        ByteBuffer buf = ByteBuffer.wrap(requestData);
+        // carimbo do handler
+        long ingressEpochMs = buf.getLong();
+
+        this.requestData = new byte[requestData.length - 8];
+        buf.get(this.requestData);
+
+        this.requestedAt = ingressEpochMs;
+
         // Pegando o correlationId
         byte[] corr = new byte[36];
-        int n = extractCorrelationIdUuid36(requestData, requestData.length, corr);
+        int ignored = extractCorrelationIdUuid36(requestData, requestData.length, corr);
         this.corrBytes = corr;
     }
 
     public PaymentRequest parse(String json) {
-        int startAmount = json.lastIndexOf(':') + 1;
-        this.amount = new BigDecimal(json.substring(startAmount, json.length() - 1).trim());
-        this.requestedAt = Instant.parse(json.substring(16, json.indexOf('Z') + 1)).toEpochMilli();
-        this.amountCents = amount.movePointRight(2).setScale(0, RoundingMode.UNNECESSARY).longValueExact();
+        int kAmt = json.indexOf("\"amount\"");
+        if (kAmt < 0) throw new IllegalArgumentException("amount missing");
+        int cAmt = json.indexOf(':', kAmt);
+        int sAmt = nextNonSpace(json, cAmt + 1);
+        int eAmt = findNumberEnd(json, sAmt);
+        this.amount = new BigDecimal(json.substring(sAmt, eAmt));
+
+        int kReq = json.indexOf("\"requestedAt\"");
+        if (kReq < 0) throw new IllegalArgumentException("requestedAt missing");
+        int cReq = json.indexOf(':', kReq);
+        int q1 = json.indexOf('"', cReq + 1);
+        int q2 = json.indexOf('"', q1 + 1);
+        if (q1 < 0 || q2 < 0) throw new IllegalArgumentException("requestedAt format");
+        this.requestedAt = Instant.parse(json.substring(q1 + 1, q2)).toEpochMilli();
+
+        this.amountCents = amount.movePointRight(2).setScale(0, java.math.RoundingMode.UNNECESSARY).longValueExact();
         return this;
     }
 
@@ -46,44 +65,64 @@ public class PaymentRequest {
         return paymentRequest;
     }
 
-    private static final byte[] REQUESTED_AT_PREFIX = "{\"requestedAt\":\"".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] REQUESTED_AT_SUFFIX = "\",".getBytes(StandardCharsets.UTF_8);
-
     private static final ThreadLocal<ByteBuffer> BUFFER = ThreadLocal.withInitial(() -> ByteBuffer.allocate(256));
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ISO_DATE_TIME.withZone(ZoneOffset.UTC);
 
-    public byte[] getPostData() {
-        if (postData == null) {
-            ByteBuffer buffer = BUFFER.get().clear();
-            buffer.put(REQUESTED_AT_PREFIX);
-
-            Instant now = Instant.ofEpochMilli(System.currentTimeMillis());
-            buffer.put(FORMATTER.format(now).getBytes(StandardCharsets.UTF_8));
-
-            buffer.put(REQUESTED_AT_SUFFIX);
-
-            buffer.put(requestData, 1, requestData.length - 1);
-
-            byte[] result = new byte[buffer.position()];
-            buffer.flip();
-            buffer.get(result);
-            postData = result;
-        }
-
-        return postData;
-    }
+    private static final byte[] REQ_AT_PREFIX = ",\"requestedAt\":\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] QUOTE_BRACE = "\"}".getBytes(StandardCharsets.UTF_8);
 
     private static final byte[] KEY = "\"correlationId\"".getBytes(StandardCharsets.US_ASCII);
     private static final int[] SKIP = buildSkip(KEY);
 
+    public byte[] getPostData() {
+        if (postData != null) return postData;
+
+        byte[] src = requestData;
+
+        int start = 0;
+        if (src.length >= 9 && src[0] != '{' && src[8] == '{') {
+            start = 8; // ignora o timestamp (ts + JSON)
+        }
+
+        int n = src.length - start;
+        if (n < 2 || src[start] != '{' || src[start + n - 1] != '}') {
+            postData = src;
+            return postData;
+        }
+
+        //byte[] ts = FORMATTER.format(Instant.now()).getBytes(StandardCharsets.UTF_8);
+
+        long epochMs;
+        if (start == 8) {
+            epochMs = ByteBuffer.wrap(src, 0, 8).order(ByteOrder.BIG_ENDIAN).getLong();
+        } else {
+            epochMs = System.currentTimeMillis(); // fallback
+        }
+
+        byte[] ts = FORMATTER.format(Instant.ofEpochMilli(epochMs)).getBytes(StandardCharsets.UTF_8);
+
+        ByteBuffer buf = BUFFER.get();
+        buf.clear();
+
+        buf.put(src, start, n - 1);
+        buf.put(REQ_AT_PREFIX);
+        buf.put(ts);
+        buf.put(QUOTE_BRACE);
+
+        byte[] out = new byte[buf.position()];
+        buf.flip();
+        buf.get(out);
+        postData = out;
+        return postData;
+    }
+
     static int extractCorrelationIdUuid36(byte[] json, int len, byte[] dest) {
         final int end = 0 + len;
 
-        // 1) encontrar a chave usando Boyer–Moore–Horspool (saltos rápidos)
+
         final int k = bmhIndexOf(json, 0, end, KEY, SKIP);
         if (k < 0) return -1;
 
-        // 2) avança até ':' após a chave
         int i = k + KEY.length;
         while (i < end && json[i] != (byte) ':') i++;
         if (i >= end) return -1;
@@ -99,24 +138,20 @@ public class PaymentRequest {
             break;
         }
 
-        // 4) espera aspas de abertura
         if (i >= end || json[i] != (byte) '"') return -1;
-        i++; // início do valor
+        i++;
 
-        // 5) encontra aspas de fechamento
         final int startVal = i;
         while (i < end && json[i] != (byte) '"') i++;
         if (i >= end) return -1;
 
-        final int n = i - startVal;          // tamanho do valor
-        if (n != 36) return -1;              // UUID deve ter 36
+        final int n = i - startVal;
+        if (n != 36) return -1;
         if (n > dest.length) return -1;
 
-        // valida hífens (posições 8, 13, 18, 23)
         final int p = startVal;
         if (json[p + 8] != '-' || json[p + 13] != '-' || json[p + 18] != '-' || json[p + 23] != '-') return -1;
 
-        // 6) copia para o destino
         System.arraycopy(json, startVal, dest, 0, n);
         return n;
     }
@@ -124,9 +159,7 @@ public class PaymentRequest {
     private static int[] buildSkip(byte[] pat) {
         int[] skip = new int[256];
         int last = pat.length - 1;
-        // default: saltar o tamanho inteiro
         for (int i = 0; i < 256; i++) skip[i] = pat.length;
-        // para cada byte do padrão (menos o último), define salto
         for (int i = 0; i < last; i++) {
             skip[pat[i] & 0xFF] = last - i;
         }
@@ -139,7 +172,7 @@ public class PaymentRequest {
         if (m == 0) return from;
         if (n < m) return -1;
 
-        int i = from + m - 1; // índice no texto apontando pro char alinhado ao final do padrão
+        int i = from + m - 1;
         final int last = m - 1;
 
         while (i < to) {
@@ -158,5 +191,28 @@ public class PaymentRequest {
             i += skip[text[i] & 0xFF];
         }
         return -1;
+    }
+
+    private static int nextNonSpace(String s, int i) {
+        int n = s.length();
+        while (i < n) {
+            char c = s.charAt(i);
+            if (c != ' ' && c != '\n' && c != '\r' && c != '\t') return i;
+            i++;
+        }
+        return n;
+    }
+
+    private static int findNumberEnd(String s, int i) {
+        int n = s.length();
+        while (i < n) {
+            char c = s.charAt(i);
+            if ((c >= '0' && c <= '9') || c == '.' || c == '-') {
+                i++;
+            } else {
+                break;
+            }
+        }
+        return i;
     }
 }

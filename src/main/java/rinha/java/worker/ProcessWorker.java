@@ -1,161 +1,118 @@
-/*package rinha.java.worker;
+package rinha.java.worker;
 
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.params.ZAddParams;
 import rinha.java.model.DataBuilder;
 import rinha.java.model.PaymentRequest;
-import rinha.java.persistence.redis.read.RedisPrincipalReadClient;
-import rinha.java.persistence.redis.write.RedisPrincipalWriteClient;
+import rinha.java.persistence.redis.RedisPool;
 import rinha.java.service.PaymentProcessorClient;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ProcessWorker {
-    private final static ProcessWorker INSTANCE = new ProcessWorker();
-    private final Integer workers;
-    private final JedisPool readPool;
-    private final JedisPool writePool;
-    private final ConcurrentLinkedQueue<PaymentRequest> queue = new ConcurrentLinkedQueue<>();
-    private final Semaphore semaphore = new Semaphore(0);
+    private static final ProcessWorker INSTANCE = new ProcessWorker();
 
-    private static final byte[] KEY_PAYMENTS = "payments".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] Q_PAYMENTS = "q:payments".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] KEY_PAYMENTS = "payments".getBytes(StandardCharsets.US_ASCII);
 
-    private final PaymentProcessorClient client;
-
-    private final AtomicInteger activeWorkers = new AtomicInteger(0); // <- NEW
-    private final AtomicBoolean failingFlag = new AtomicBoolean(true);
+    private final RedisFlusher flusher;
+    private final int workers = Integer.parseInt(System.getenv().getOrDefault("NUM_WORKERS", "16"));
+    private final PaymentProcessorClient client = PaymentProcessorClient.getInstance();
 
     private ProcessWorker() {
-        this.workers = Integer.parseInt(System.getenv().getOrDefault("NUM_WORKERS", "10"));
-        this.writePool = RedisPrincipalWriteClient.getInstance().getPool();
-        this.readPool = RedisPrincipalReadClient.getInstance().getPool();
-        this.client = PaymentProcessorClient.getInstance();
-        System.out.println("Worker count: " + workers);
-        //init();
+        int inflight = Integer.parseInt(System.getenv().getOrDefault("HTTP_IN_FLIGHT", String.valueOf(Math.max(2, workers / 2))));
+        int batch = Integer.parseInt(System.getenv().getOrDefault("BATCH_SIZE", "512"));
+        long waitMs = Long.parseLong(System.getenv().getOrDefault("BATCH_WAIT_MS", "0"));
+
+        this.flusher = new RedisFlusher(RedisPool.getInstance().getPool(), batch, Duration.ofMillis(waitMs));
+        this.flusher.start();
+
+        System.out.printf("Workers=%d HTTP_IN_FLIGHT=%d batch=%d wait=%dms%n", workers, inflight, batch, waitMs);
+        init();
     }
 
     public static ProcessWorker getInstance() {
         return INSTANCE;
     }
 
-    //public void init() {
-    //    for (int i = 0; i < this.workers; i++) {
-    //        Thread.startVirtualThread(() -> {
-    //            try (Jedis write = this.writePool.getResource(); Jedis read = this.readPool.getResource()) {
-    //                start(read, write);
-    //            } catch (Exception _) {
-    //            }
-    //        });
-    //    }
-    //}
-    public void init() {
+    private void init() {
         for (int i = 0; i < this.workers; i++) {
-            final int id = i;
             Thread.startVirtualThread(() -> {
-                try (var read = this.readPool.getResource()) {
-                    consumeLoop(id, read);
-                } catch (Exception e) {
-                    e.printStackTrace();
+                try (var jedis = RedisPool.getInstance().getPool().getResource(); var exclusive = RedisPool.getInstance().getPool().getResource()) {
+                    consumeLoop(jedis, exclusive);
+                } catch (Exception ignored) {
                 }
             });
         }
+
         System.out.println("Started " + workers + " Redis consumers");
     }
 
-    private boolean processPayment(PaymentRequest pr) {
-        try(var write = writePool.getResource()) {
-            if (client.processPayment(pr)) {
-                var prr = pr.parseToDefault();
-                final double score = prr.requestedAt;
-                final byte[] member = DataBuilder.buildBytes(prr);
-                write.zadd(KEY_PAYMENTS, score, member);
-                return true;
-            }
-
-            if (client.sendPaymentFallback(pr)) {
-                var prr = pr.parseToFallback();
-                final double score = prr.requestedAt;
-                final byte[] member = DataBuilder.buildBytes(prr);
-                write.zadd(KEY_PAYMENTS, score, member);
-                return true;
-            }
-
-            write.rpush(Q_PAYMENTS, pr.requestData);
-            semaphore.release();
-            return false;
-        }
-
-        //if (client.sendPaymentFallback(pr)) {
-        //    var prr = pr.parseToFallback();
-        //    final double score = prr.requestedAt;
-        //    final byte[] member = DataBuilder.buildBytes(prr);
-        //    write.zadd(KEY_PAYMENTS, score, member);
-        //    return;
-        //}
-        //queue.offer(pr);
-        //semaphore.release();
-        //write.set("health-payment", "false");
+    public void enqueue(byte[] requestJson) {
+        byte[] packed = packWithTs(System.nanoTime(), requestJson);
+        this.flusher.enqueue(packed);
     }
 
-    private static final byte[] Q_PAYMENTS = "q:payments".getBytes(StandardCharsets.US_ASCII);
+    private void saveZaa(Jedis exclusive, PaymentRequest prr) {
+        final double score = prr.requestedAt;
+        final byte[] member = DataBuilder.buildBytes(prr);
 
-    public void enqueue(byte[] request) {
-        //var payment = new PaymentRequest(request);
-        //queue.offer(payment);
-        //semaphore.release();
+        try {
+            long t0 = System.nanoTime();
+            ZAddParams nx = ZAddParams.zAddParams().nx();
+            long added = exclusive.zadd(KEY_PAYMENTS, score, member, nx);
+            long borrowUs = (System.nanoTime() - t0) / 1000;
+            if (borrowUs > 20000) System.out.printf("[worker-process] borrow zadd(...) took %d µs%n", borrowUs);
 
-        try (var jedis = writePool.getResource()) {
-            jedis.rpush(Q_PAYMENTS, request);
+            if (added == 0L) {
+                if ((System.nanoTime() & 0x3FF) == 0) {
+                    System.out.println("[warn] ZADD NX returned 0 (duplicate member?)");
+                }
+            }
+        } catch (Exception re) {
+            System.err.println(re.getMessage());
+            safeReconnect(exclusive);
         }
     }
 
-    // NOVO CODE
-
-    private void consumeLoop(int workerId, Jedis read) {
+    private void consumeLoop(Jedis jedis, Jedis exclusive) {
         for (; ; ) {
-            List<byte[]> res = read.blpop(0, Q_PAYMENTS);
+            List<byte[]> res = jedis.blpop(0, Q_PAYMENTS);
             if (res.size() < 2) continue;
 
-            byte[] payload = res.get(1);
-            PaymentRequest pr = new PaymentRequest(payload);
+            byte[] packed = res.get(1);
 
-            long t0 = System.nanoTime();
-            boolean ok = false;
-            long tHttp=0, tRedis=0, tOther=0;
+            final PaymentRequest pr = new PaymentRequest(packed);
+            final byte[] p = pr.getPostData();
 
-            try {
-                long a = System.nanoTime();
-                ok = client.processPayment(pr);          // suspeito: deve estar levando ~1000ms
-                long b = System.nanoTime();
-                tHttp = (b - a)/1_000_000;
-
-                if (ok) {
-                    a = System.nanoTime();
-                    var prr = pr.parseToDefault();
-                    final double score = prr.requestedAt;
-                    final byte[] member = DataBuilder.buildBytes(prr);
-                    try (var w = writePool.getResource()) {
-                        //w.zadd(KEY_PAYMENTS, score, member);
-                    }
-                    b = System.nanoTime();
-                    tRedis = (b - a)/1_000_000;
-                } else {
-                    try (var w = writePool.getResource()) { w.rpush(Q_PAYMENTS, payload); }
-                }
-            } finally {
-                long total = (System.nanoTime() - t0)/1_000_000;
-                tOther = Math.max(0, total - tHttp - tRedis);
-                if (total >= 50) {
-                    System.out.printf("[worker-%d] total=%dms http=%dms redis=%dms other=%dms ok=%s%n",
-                            workerId, total, tHttp, tRedis, tOther, ok);
+            if (client.processPayment(p)) {
+                var prr = pr.parseToDefault();
+                saveZaa(exclusive, prr);
+            } else {
+                try {
+                    jedis.rpush(Q_PAYMENTS, packed);
+                } catch (Exception re) {
+                    safeReconnect(jedis);
+                    jedis.rpush(Q_PAYMENTS, packed);
                 }
             }
         }
     }
+
+    private static void safeReconnect(Jedis j) {
+        try {
+            j.close();
+        } catch (Exception ignore) {
+        }
+    }
+
+    private static byte[] packWithTs(long tsNano, byte[] payload) {
+        byte[] out = new byte[Long.BYTES + payload.length];
+        ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN).putLong(tsNano).put(payload);
+        return out;
+    }
 }
-*/

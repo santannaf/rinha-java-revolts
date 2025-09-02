@@ -12,11 +12,11 @@ public final class HttpClientConfig {
 
     private HttpClientConfig() {
         final boolean useVirtual = Boolean.parseBoolean(getenv("HTTP_VIRTUAL", "true"));
-        final int core = Integer.parseInt(getenv("HTTP_CORE_THREADS", "4"));
-        final int max = Integer.parseInt(getenv("HTTP_MAX_THREADS", "16"));
-        final int qcap = Integer.parseInt(getenv("HTTP_QUEUE", "256"));
-        final long keepAliveSec = Long.parseLong(getenv("HTTP_KEEPALIVE_SEC", "30"));
-        final long connectTimeoutMs = Long.parseLong(getenv("HTTP_CONNECT_TIMEOUT_MS", "500"));
+        final int core = Integer.parseInt(getenv("HTTP_CORE_THREADS", "24"));
+        final int max = Integer.parseInt(getenv("HTTP_MAX_THREADS", "52"));
+        final int qcap = Integer.parseInt(getenv("HTTP_QUEUE", "512"));
+        final long keepAliveSec = Long.parseLong(getenv("HTTP_KEEPALIVE_SEC", "10"));
+        final long connectTimeoutMs = Long.parseLong(getenv("HTTP_CONNECT_TIMEOUT_MS", "250"));
 
         // ---- thread factory (virtual por padrão) ----
         final ThreadFactory tf = useVirtual

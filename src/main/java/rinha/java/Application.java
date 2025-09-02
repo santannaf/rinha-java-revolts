@@ -3,12 +3,9 @@ package rinha.java;
 import com.sun.net.httpserver.HttpServer;
 import rinha.java.http.HttpClientConfig;
 import rinha.java.http.PathHandler;
-import rinha.java.persistence.redis.read.RedisPrincipalReadClient;
-import rinha.java.persistence.redis.read.RedisSecondaryReadClient;
-import rinha.java.persistence.redis.write.RedisPrincipalWriteClient;
-import rinha.java.persistence.redis.write.RedisSecondaryWriteClient;
+import rinha.java.persistence.redis.RedisPool;
 import rinha.java.service.PaymentProcessorClient;
-import rinha.java.worker.ProcessWorker2;
+import rinha.java.worker.ProcessWorker;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -27,21 +24,13 @@ public class Application {
         var ignored = HttpClientConfig.getInstance();
         server.createContext("/", handlers.getHandlers());
 
-        RedisPrincipalWriteClient.getInstance();
-        RedisSecondaryWriteClient.getInstance();
-        RedisPrincipalReadClient.getInstance();
-        RedisSecondaryReadClient.getInstance();
-        //LeaderHealthMonitor.getInstance();
-        ProcessWorker2.getInstance();
+        RedisPool.getInstance();
+        ProcessWorker.getInstance();
         PaymentProcessorClient.getInstance();
 
         server.start();
 
-        //WarmUp.getInstance();
-        //Thread.startVirtualThread(() -> LeaderHealthMonitor.getInstance().start());
-
         System.out.println("Java Server Revolts on http://" + serverHost + ":" + serverPort);
-
         Thread.currentThread().join();
     }
 }

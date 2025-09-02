@@ -12,7 +12,6 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class RedisFlusher {
-
     private static final byte[] Q_PAYMENTS = "q:payments".getBytes(StandardCharsets.US_ASCII);
 
     private final JedisPool writePool;
@@ -69,8 +68,7 @@ public final class RedisFlusher {
             }
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
-        } catch (Throwable t) {
-            t.printStackTrace();
+        } catch (Throwable ignored) {
         }
     }
 }
